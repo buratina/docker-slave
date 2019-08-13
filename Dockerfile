@@ -1,6 +1,8 @@
+# escape=`
+
 # The MIT License
 #
-#  Copyright (c) 2015-2019, CloudBees, Inc. and other Jenkins contributors
+#  Copyright (c) 2019, Alex Earl and other Jenkins Contributors
 #
 #  Permission is hereby granted, free of charge, to any person obtaining a copy
 #  of this software and associated documentation files (the "Software"), to deal
@@ -20,35 +22,44 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 #  THE SOFTWARE.
 
-FROM openjdk:8-jdk
-MAINTAINER Oleg Nenashev <o.v.nenashev@gmail.com>
+ARG WINDOWS_DOCKER_TAG=1809
+
+FROM openjdk:11-jdk-windowsservercore-$WINDOWS_DOCKER_TAG
+MAINTAINER Alex Earl <slide.o.mix@gmail.com>
+
+SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
 ARG VERSION=3.29
+LABEL Description="This is a base image, which provides the Jenkins agent executable (agent.jar)" Vendor="Jenkins project" Version="${VERSION}"
+
 ARG user=jenkins
-ARG group=jenkins
-ARG uid=1000
-ARG gid=1000
 
-ENV HOME /home/${user}
-RUN groupadd -g ${gid} ${group}
-RUN useradd -c "Jenkins user" -d $HOME -u ${uid} -g ${gid} -m ${user}
-LABEL Description="This is a base image, which provides the Jenkins agent executable (slave.jar)" Vendor="Jenkins project" Version="${VERSION}"
+ARG AGENT_FILENAME=agent.jar
+ARG AGENT_HASH_FILENAME=$AGENT_FILENAME.sha1
 
-ARG AGENT_WORKDIR=/home/${user}/agent
+RUN net user "$env:user" /add
+RUN mkdir C:/ProgramData/Jenkins | Out-Null
 
-RUN echo 'deb http://deb.debian.org/debian stretch-backports main' > /etc/apt/sources.list.d/stretch-backports.list
- RUN apt-get update && apt-get install -t stretch-backports git-lfs
-RUN curl --create-dirs -fsSLo /usr/share/jenkins/slave.jar https://repo.jenkins-ci.org/public/org/jenkins-ci/main/remoting/${VERSION}/remoting-${VERSION}.jar \
-  && chmod 755 /usr/share/jenkins \
-  && chmod 644 /usr/share/jenkins/slave.jar
+ARG AGENT_ROOT=C:/Users/$user/Jenkins
+ARG AGENT_WORKDIR=${AGENT_ROOT}/Agent
 
-USER ${user}
 ENV AGENT_WORKDIR=${AGENT_WORKDIR}
-RUN mkdir /home/${user}/.jenkins && mkdir -p ${AGENT_WORKDIR}
 
-VOLUME /home/${user}/.jenkins
+# Get the Agent from the Jenkins Artifacts Repository
+RUN [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 ; `
+    Invoke-WebRequest $('https://repo.jenkins-ci.org/public/org/jenkins-ci/main/remoting/{0}/remoting-{0}.jar' -f $env:VERSION) -OutFile $(Join-Path C:/ProgramData/Jenkins $env:AGENT_FILENAME) -UseBasicParsing ;`
+    Invoke-WebRequest $('https://repo.jenkins-ci.org/public/org/jenkins-ci/main/remoting/{0}/remoting-{0}.jar.sha1' -f $env:VERSION) -OutFile (Join-Path C:/ProgramData/Jenkins $env:AGENT_HASH_FILENAME) -UseBasicParsing ;`
+    if ((Get-FileHash (Join-Path C:/ProgramData/Jenkins $env:AGENT_FILENAME) -Algorithm SHA1).Hash -ne (Get-Content (Join-Path C:/ProgramData/Jenkins $env:AGENT_HASH_FILENAME))) {exit 1}
+
+USER $user
+
+RUN New-Item -Type Directory $('{0}/.jenkins' -f $env:AGENT_ROOT) | Out-Null ; `
+    New-Item -Type Directory $env:AGENT_WORKDIR | Out-Null
+
+VOLUME ${AGENT_ROOT}/.jenkins
 VOLUME ${AGENT_WORKDIR}
-WORKDIR /home/${user}
+WORKDIR ${AGENT_ROOT}
 
 COPY jenkins-agent.ps1 C:/ProgramData/Jenkins
 ENTRYPOINT ["powershell.exe", "-f", "C:/ProgramData/Jenkins/jenkins-agent.ps1"]
+
